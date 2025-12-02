@@ -1,0 +1,288 @@
+# src/corr_utils.py
+
+# note: utility functions for correlation anomaly detection
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import matplotlib.pyplot as plt
+from itertools import combinations
+
+
+# ---------- Data download & preprocessing ----------
+
+def download_price_data(tickers, start_date):
+    """
+    Download adjusted close prices for a list of tickers from Yahoo Finance.
+    """
+    data = yf.download(tickers, start=start_date, auto_adjust=True)["Close"]
+
+    if isinstance(data, pd.Series):
+        data = data.to_frame()
+
+    return data
+
+
+def compute_log_returns(price_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute daily log returns: r_t = ln(P_t / P_{t-1}).
+    """
+    returns = np.log(price_df / price_df.shift(1))
+    return returns.dropna()
+
+
+# ---------- Correlation & anomalies ----------
+
+def rolling_correlation_pair(returns_df: pd.DataFrame,
+                             ticker_a: str,
+                             ticker_b: str,
+                             window: int) -> pd.Series:
+    """
+    Rolling correlation between two assets.
+    """
+    corr_series = returns_df[ticker_a].rolling(window).corr(returns_df[bicker_b])
+    return corr_series.dropna()
+
+
+def compute_corr_zscore(corr_series: pd.Series):
+    """
+    Compute z-score of a correlation time series.
+    """
+    mean_corr = corr_series.mean()
+    std_corr = corr_series.std()
+    z_score = (corr_series - mean_corr) / std_corr
+    return z_score, mean_corr, std_corr
+
+
+def detect_anomalies_from_z(z_score_series: pd.Series,
+                            threshold: float) -> pd.Series:
+    """
+    Return dates where |z-score| exceeds the threshold.
+    """
+    return z_score_series[abs(z_score_series) > threshold]
+
+
+def detect_corr_anomalies_for_universe(returns_df: pd.DataFrame,
+                                       window: int,
+                                       threshold: float) -> pd.DataFrame:
+    """
+    Detect correlation anomalies for all pairs of assets.
+    """
+    results = []
+
+    for a, b in combinations(returns_df.columns, 2):
+        corr_series = rolling_correlation_pair(returns_df, a, b, window)
+
+        if len(corr_series) < 10:
+            continue
+
+        z_score, mean_corr, std_corr = compute_corr_zscore(corr_series)
+        anomalies = detect_anomalies_from_z(z_score, threshold)
+
+        results.append({
+            "pair": f"{a}-{b}",
+            "mean_corr": mean_corr,
+            "std_corr": std_corr,
+            "last_corr": corr_series.iloc[-1],
+            "last_z": z_score.iloc[-1],
+            "n_anomalies": len(anomalies),
+            "last_anomaly_date": anomalies.index[-1] if len(anomalies) else None,
+        })
+
+    df = pd.DataFrame(results)
+
+    if df.empty:
+        return df
+
+    return df.sort_values(by="last_z",
+                          key=lambda s: s.abs(),
+                          ascending=False)
+
+
+# ---------- Plotting ----------
+
+def make_corr_and_zscore_figure(corr_series: pd.Series,
+                                z_score_series: pd.Series,
+                                anomalies: pd.Series,
+                                mean_corr: float,
+                                threshold: float,
+                                pair_name: str):
+    """
+    Build a matplotlib Figure with:
+      1) rolling correlation + historical mean
+      2) z-score + thresholds + anomalies
+    Returns the Figure object (useful for Streamlit / notebooks).
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    # plot 1: correlation
+    axes[0].plot(corr_series.index, corr_series.values, label="Rolling correlation")
+    axes[0].axhline(mean_corr, linestyle="--", label="Historical mean")
+    axes[0].set_title(f"Rolling correlation - {pair_name}")
+    axes[0].legend()
+    axes[0].grid(True, linestyle=":")
+
+    # plot 2: z-score
+    axes[1].plot(z_score_series.index, z_score_series.values, label="Z-score")
+    axes[1].axhline(threshold, linestyle="--", label=f"+Threshold ({threshold})")
+    axes[1].axhline(-threshold, linestyle="--", label=f"-Threshold ({threshold})")
+    axes[1].scatter(anomalies.index, anomalies.values, marker="o", label="Anomalies")
+    axes[1].set_title(f"Correlation z-score - {pair_name}")
+    axes[1].legend()
+    axes[1].grid(True, linestyle=":")
+
+    plt.tight_layout()
+    return fig
+# app.py
+
+import os
+import sys
+
+import streamlit as st
+import pandas as pd
+
+# make sure Python can find src/corr_utils.py
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.join(CURRENT_DIR, "src")
+if SRC_DIR not in sys.path:
+    sys.path.append(SRC_DIR)
+
+from corr_utils import (
+    download_price_data,
+    compute_log_returns,
+    rolling_correlation_pair,
+    compute_corr_zscore,
+    detect_anomalies_from_z,
+    detect_corr_anomalies_for_universe,
+    make_corr_and_zscore_figure,
+)
+
+
+# ------------- Streamlit UI -------------
+
+st.set_page_config(
+    page_title="Cross-Asset Correlation Anomaly Detector",
+    layout="wide",
+)
+
+st.title("📈 Cross-Asset Correlation Anomaly Detector")
+
+st.markdown(
+    """
+This app:
+- Downloads historical prices for a set of assets (via Yahoo Finance)
+- Computes daily log returns
+- Tracks rolling correlations between each pair
+- Calculates correlation z-scores
+- Flags unusual correlation regimes (anomalies)
+"""
+)
+
+# Sidebar controls
+st.sidebar.header("Configuration")
+
+default_tickers = "SPY, TLT, GLD, USO"
+tickers_input = st.sidebar.text_input(
+    "Tickers (comma-separated)",
+    value=default_tickers,
+    help="Example: SPY, TLT, GLD, USO, QQQ",
+)
+
+start_date = st.sidebar.date_input("Start date", value=pd.to_datetime("2015-01-01"))
+
+window = st.sidebar.slider(
+    "Rolling window (days)",
+    min_value=20,
+    max_value=252,
+    value=60,
+    step=5,
+)
+
+threshold = st.sidebar.slider(
+    "Anomaly threshold |z|",
+    min_value=1.0,
+    max_value=4.0,
+    value=2.0,
+    step=0.5,
+)
+
+run_button = st.sidebar.button("Run analysis")
+
+
+# ------------- Main logic -------------
+
+if run_button:
+    # parse tickers
+    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
+    if len(tickers) < 2:
+        st.error("Please enter at least two tickers.")
+        st.stop()
+
+    st.subheader("1. Downloading data")
+    st.write("Tickers:", ", ".join(tickers))
+
+    with st.spinner("Downloading price data from Yahoo Finance..."):
+        price_data = download_price_data(tickers, start_date.strftime("%Y-%m-%d"))
+
+    if price_data.empty:
+        st.error("No price data downloaded. Check tickers or start date.")
+        st.stop()
+
+    st.write("Sample of price data:")
+    st.dataframe(price_data.tail())
+
+    # compute returns
+    returns = compute_log_returns(price_data)
+
+    st.subheader("2. Correlation anomaly summary")
+
+    summary_table = detect_corr_anomalies_for_universe(
+        returns, window=window, threshold=threshold
+    )
+
+    if summary_table.empty:
+        st.warning("Not enough data to compute rolling correlations for the selected settings.")
+        st.stop()
+
+    st.write("Pairs sorted by strongest current correlation anomaly (|z|):")
+    st.dataframe(summary_table.style.format(
+        {"mean_corr": "{:.2f}", "std_corr": "{:.2f}", "last_corr": "{:.2f}", "last_z": "{:.2f}"}
+    ))
+
+    # Let user choose which pair to visualize
+    st.subheader("3. Visualize a specific pair")
+
+    pair_options = summary_table["pair"].tolist()
+    selected_pair = st.selectbox(
+        "Select pair to plot:",
+        options=pair_options,
+        index=0,
+    )
+
+    a, b = selected_pair.split("-")
+
+    corr_series = rolling_correlation_pair(returns, a, b, window)
+    z_series, mean_corr, std_corr = compute_corr_zscore(corr_series)
+    anomalies = detect_anomalies_from_z(z_series, threshold)
+
+    fig = make_corr_and_zscore_figure(
+        corr_series=corr_series,
+        z_score_series=z_series,
+        anomalies=anomalies,
+        mean_corr=mean_corr,
+        threshold=threshold,
+        pair_name=selected_pair,
+    )
+^X
+    st.pyplot(fig)
+
+else:
+    st.info("Configure the settings in the sidebar and click **Run analysis** to start.")
+source ~/finance-env/bin/activate
+cd ~/cross-asset-corr-detector
+
+streamlit run app.py
+
+
+nano src/corr_utils.p
