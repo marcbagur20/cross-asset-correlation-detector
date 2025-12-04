@@ -3,6 +3,7 @@ name: Test install (Python 3.11)
 on:
   push:
   pull_request:
+  workflow_dispatch:   # permite lanzarlo a mano desde Actions
 
 jobs:
   install-test:
@@ -26,5 +27,5 @@ jobs:
         run: |
           python - << 'EOF'
           import src.app
-          print("App imports correctly!")
+          print("✅ src.app imported correctly")
           EOF
