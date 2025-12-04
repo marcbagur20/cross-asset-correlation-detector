@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import io
 
 
-from utils import (
+from src.utils import (
     download_prices,
     compute_returns,
     rolling_correlation_pair,
