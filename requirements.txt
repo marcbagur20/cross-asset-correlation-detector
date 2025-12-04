@@ -1,9 +1,18 @@
+# Core app & data
 streamlit
+yfinance
 pandas
 numpy
-matplotlib
-seaborn
+
+# Estadística y modelos
 scipy
 statsmodels
 scikit-learn
-yfinance
+
+# Visualización
+matplotlib
+seaborn
+
+# Exportaciones a Excel
+openpyxl
+xlsxwriter
